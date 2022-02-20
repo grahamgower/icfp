@@ -1,0 +1,16 @@
+name: um
+dependencies: [base, bytestring, containers, primitive, vector]
+ghc-options:
+  - -O2
+  - -Wall
+#  - -Werror
+  - -Wcompat
+  - -Widentities
+  - -Wincomplete-record-updates
+  - -Wincomplete-uni-patterns
+  - -Wpartial-fields
+  - -Wredundant-constraints
+executables:
+  um:
+    main: um.hs
+    other-modules: []
