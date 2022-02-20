@@ -6,9 +6,7 @@
 import Data.Bits
 import Data.Char
 import Data.Word
-import Text.Printf
 import Control.Monad.Primitive (PrimState)
-import qualified Data.List as L
 import qualified System.Environment
 import qualified System.Exit
 import qualified System.IO
@@ -67,26 +65,18 @@ decodeInstr instr =
           Orthography iA' val
       _ -> error $ "invalid instruction " <> show instr
 
-{-
-dumpState :: Instruction -> Int -> MV.MVector Word32 -> IntMap.IntMap (V.Vector Word32) -> IO ()
-dumpState op finger reg mem = do
-  let reg_list = [MV.read reg i | i <- [0..((MV.length reg) - 1)]]
-  let reg_str = (L.intercalate " " (map (printf "0x%08x") reg_list)) :: String
-  let op_str = show op
-  hPrintf System.IO.stderr "%04x: %-20s  | %s | %d arrays\n" finger op_str reg_str (IntMap.size mem)
--}
 
 spinCycle :: Int
   -> MV.MVector (PrimState IO) Word32
   -> MV.MVector (PrimState IO) Word32
-  -> IntMap.IntMap (V.Vector Word32)
+  -> IntMap.IntMap (MV.MVector (PrimState IO) Word32)
   -> [Int]
   -> IO ()
 spinCycle finger reg program mem freekeys = do
   instr <- MV.read program finger
   let op = decodeInstr instr
   let finger' = finger + 1
-  --dumpState op finger reg mem
+
   case op of
 
     Move iA iB iC -> do
@@ -110,7 +100,7 @@ spinCycle finger reg program mem freekeys = do
           MV.read program (fromIntegral rC)
         else 
           let array = mem IntMap.! (fromIntegral rB)
-          in return (array V.! (fromIntegral rC))
+          in MV.read array (fromIntegral rC)
       MV.unsafeWrite reg iA rA'
       spinCycle finger' reg program mem freekeys
 
@@ -124,8 +114,9 @@ spinCycle finger reg program mem freekeys = do
         MV.write program (fromIntegral rB) rC
         spinCycle finger' reg program mem freekeys
       else do
-        let frob_array = (V.// [((fromIntegral rB), rC)])
-        let mem' = IntMap.adjust frob_array (fromIntegral rA) mem
+        let array = mem IntMap.! (fromIntegral rA)
+        MV.write array (fromIntegral rB) rC
+        let mem' = IntMap.insert (fromIntegral rA) array mem
         spinCycle finger' reg program mem' freekeys
 
     Add iA iB iC -> do
@@ -179,7 +170,7 @@ spinCycle finger reg program mem freekeys = do
       rC <- MV.unsafeRead reg iC
       let k = head freekeys
       let freekeys' = tail freekeys
-      let array = V.replicate (fromIntegral rC) (0 :: Word32)
+      array <- MV.replicate (fromIntegral rC) (0 :: Word32)
       let mem' = IntMap.insert k array mem
       MV.unsafeWrite reg iB (fromIntegral k)
       spinCycle finger' reg program mem' freekeys'
@@ -232,7 +223,7 @@ spinCycle finger reg program mem freekeys = do
       if rB == 0 then
         spinCycle finger'' reg program mem freekeys
       else do
-        program' <- V.thaw $ mem IntMap.! (fromIntegral rB)
+        program' <- MV.clone $ mem IntMap.! (fromIntegral rB)
         spinCycle finger'' reg program' mem freekeys
 
     Orthography iA val -> do
