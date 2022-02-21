@@ -205,7 +205,6 @@ spinCycle debug finger reg program mem freekeys = do
       -- are allowed.
       rC <- MV.unsafeRead reg iC
       putChar $ chr $ fromIntegral (rC .&. 0xff)
-      System.IO.hFlush System.IO.stdout
       spinCycle debug finger' reg program mem freekeys
 
     Input iC -> do
@@ -215,6 +214,7 @@ spinCycle debug finger reg program mem freekeys = do
       -- If the end of input has been signaled, then the 
       -- register C is endowed with a uniform value pattern
       -- where every place is pregnant with the 1 bit.
+      System.IO.hFlush System.IO.stdout
       eof <- System.IO.isEOF
       rC' <-
         if eof then
@@ -293,6 +293,7 @@ um o = do
     program' <- V.thaw program
     let mem = IntMap.empty
     let freekeys = [1..]  -- Available keys in the memory map.
+    System.IO.hSetBinaryMode System.IO.stdout True
     spinCycle debug finger reg program' mem freekeys
 
 main :: IO ()
