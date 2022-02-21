@@ -1,5 +1,11 @@
 name: um
-dependencies: [base, bytestring, containers, primitive, vector]
+dependencies:
+  - base
+  - bytestring
+  - containers
+  - optparse-applicative
+  - primitive
+  - vector
 ghc-options:
   - -O2
   - -Wall

@@ -1,48 +1,50 @@
 -- ICFP2006: http://www.boundvariable.org/task.shtml
 
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE BangPatterns #-}
 -- base
 import Data.Bits
 import Data.Char
 import Data.Word
-import Control.Monad.Primitive (PrimState)
-import qualified System.Environment
-import qualified System.Exit
+import Text.Printf
+import qualified Data.List as L
 import qualified System.IO
 
 -- bytestring
 import qualified Data.ByteString.Lazy as B
 -- containers
 import qualified Data.IntMap.Strict as IntMap
+-- optparse-applicative
+import qualified Options.Applicative as OA
+-- primative
+import Control.Monad.Primitive (PrimState)
 -- vector
 import qualified Data.Vector.Unboxed as V
 import qualified Data.Vector.Unboxed.Mutable as MV
 
+
 data Instruction
-  = Move Int Int Int
-  | ArrayIndex Int Int Int
-  | ArrayAmend Int Int Int
-  | Add Int Int Int
-  | Mul Int Int Int
-  | Div Int Int Int
-  | Nand Int Int Int
+  = Move !Int !Int !Int
+  | ArrayIndex !Int !Int !Int
+  | ArrayAmend !Int !Int !Int
+  | Add !Int !Int !Int
+  | Mul !Int !Int !Int
+  | Div !Int !Int !Int
+  | Nand !Int !Int !Int
   | Halt
-  | Alloc Int Int
-  | Free Int
-  | Output Int
-  | Input Int
-  | LoadProgram Int Int
-  | Orthography Int Word32
+  | Alloc !Int !Int
+  | Free !Int
+  | Output !Int
+  | Input !Int
+  | LoadProgram !Int !Int
+  | Orthography !Int !Word32
   deriving Show
 
-{-# INLINE decodeInstr #-}
 decodeInstr :: Word32 -> Instruction
 decodeInstr instr =
-  let opcode = (instr `shiftR` 28) .&. 0xf
-      iA = fromIntegral $ (instr `shiftR` 6) .&. 0x7
-      iB = fromIntegral $ (instr `shiftR` 3) .&. 0x7
-      iC = fromIntegral $ instr .&. 0x7
+  let !opcode = instr `shiftR` 28 .&. 0xf
+      !iA = fromIntegral $! instr `shiftR` 6 .&. 0x7
+      !iB = fromIntegral $! instr `shiftR` 3 .&. 0x7
+      !iC = fromIntegral $! instr .&. 0x7
   in
     case opcode of
       0 -> Move iA iB iC
@@ -59,23 +61,38 @@ decodeInstr instr =
       11 -> Input iC
       12 -> LoadProgram iB iC
       13 ->
-        let iA' = fromIntegral $ (instr `shiftR` 25) .&. 0x7
-            val = instr .&. 0x1ffffff
+        let !iA' = fromIntegral $! instr `shiftR` 25 .&. 0x7
+            !val = instr .&. 0x1ffffff
         in
           Orthography iA' val
       _ -> error $ "invalid instruction " <> show instr
 
+logState
+  :: Instruction
+  -> Int
+  -> MV.MVector (PrimState IO) Word32
+  -> IntMap.IntMap (MV.MVector (PrimState IO) Word32)
+  -> IO ()
+logState op finger reg mem = do
+  reg' <- V.freeze reg
+  let reg_list = V.toList reg'
+  let reg_str = (L.intercalate " " (map (printf "0x%08x") reg_list)) :: String
+  let op_str = show op
+  hPrintf System.IO.stderr "%04x: %-20s  | %s | %d arrays\n" finger op_str reg_str (IntMap.size mem)
 
-spinCycle :: Int
+spinCycle
+  :: Bool
+  -> Int
   -> MV.MVector (PrimState IO) Word32
   -> MV.MVector (PrimState IO) Word32
   -> IntMap.IntMap (MV.MVector (PrimState IO) Word32)
   -> [Int]
   -> IO ()
-spinCycle finger reg program mem freekeys = do
+spinCycle debug finger reg program mem freekeys = do
   instr <- MV.read program finger
-  let op = decodeInstr instr
+  let !op = decodeInstr instr
   let finger' = finger + 1
+  --if debug then logState op finger reg mem else return ()
 
   case op of
 
@@ -88,7 +105,7 @@ spinCycle finger reg program mem freekeys = do
         MV.unsafeWrite reg iA rB
       else
         return ()
-      spinCycle finger' reg program mem freekeys
+      spinCycle debug finger' reg program mem freekeys
 
     ArrayIndex iA iB iC -> do
       -- The register A receives the value stored at offset
@@ -102,7 +119,7 @@ spinCycle finger reg program mem freekeys = do
           let array = mem IntMap.! (fromIntegral rB)
           in MV.read array (fromIntegral rC)
       MV.unsafeWrite reg iA rA'
-      spinCycle finger' reg program mem freekeys
+      spinCycle debug finger' reg program mem freekeys
 
     ArrayAmend iA iB iC -> do
       -- The array identified by A is amended at the offset
@@ -112,12 +129,12 @@ spinCycle finger reg program mem freekeys = do
       rC <- MV.unsafeRead reg iC
       if rA == 0 then do
         MV.write program (fromIntegral rB) rC
-        spinCycle finger' reg program mem freekeys
+        spinCycle debug finger' reg program mem freekeys
       else do
         let array = mem IntMap.! (fromIntegral rA)
         MV.write array (fromIntegral rB) rC
         let mem' = IntMap.insert (fromIntegral rA) array mem
-        spinCycle finger' reg program mem' freekeys
+        spinCycle debug finger' reg program mem' freekeys
 
     Add iA iB iC -> do
       -- The register A receives the value in register B plus 
@@ -125,7 +142,7 @@ spinCycle finger reg program mem freekeys = do
       rB <- MV.unsafeRead reg iB
       rC <- MV.unsafeRead reg iC
       MV.unsafeWrite reg iA (rB + rC)
-      spinCycle finger' reg program mem freekeys
+      spinCycle debug finger' reg program mem freekeys
 
     Mul iA iB iC -> do
       -- The register A receives the value in register B times
@@ -133,7 +150,7 @@ spinCycle finger reg program mem freekeys = do
       rB <- MV.unsafeRead reg iB
       rC <- MV.unsafeRead reg iC
       MV.unsafeWrite reg iA (rB * rC)
-      spinCycle finger' reg program mem freekeys
+      spinCycle debug finger' reg program mem freekeys
 
     Div iA iB iC -> do
       -- The register A receives the value in register B
@@ -143,7 +160,7 @@ spinCycle finger reg program mem freekeys = do
       rB <- MV.unsafeRead reg iB
       rC <- MV.unsafeRead reg iC
       MV.unsafeWrite reg iA (rB `div` rC)
-      spinCycle finger' reg program mem freekeys
+      spinCycle debug finger' reg program mem freekeys
 
     Nand iA iB iC -> do
       -- Each bit in the register A receives the 1 bit if
@@ -154,7 +171,7 @@ spinCycle finger reg program mem freekeys = do
       rC <- MV.unsafeRead reg iC
       let rA' = complement (rB .&. rC)
       MV.unsafeWrite reg iA rA'
-      spinCycle finger' reg program mem freekeys
+      spinCycle debug finger' reg program mem freekeys
 
     Halt ->
       -- The universal machine stops computation.
@@ -173,14 +190,14 @@ spinCycle finger reg program mem freekeys = do
       array <- MV.replicate (fromIntegral rC) (0 :: Word32)
       let mem' = IntMap.insert k array mem
       MV.unsafeWrite reg iB (fromIntegral k)
-      spinCycle finger' reg program mem' freekeys'
+      spinCycle debug finger' reg program mem' freekeys'
 
     Free iC -> do
       -- The array identified by the register C is abandoned.
       -- Future allocations may then reuse that identifier.
       rC <- MV.unsafeRead reg iC
       let freekeys' = (fromIntegral rC) : freekeys
-      spinCycle finger' reg program mem freekeys'
+      spinCycle debug finger' reg program mem freekeys'
 
     Output iC -> do
       -- The value in the register C is displayed on the console
@@ -189,7 +206,7 @@ spinCycle finger reg program mem freekeys = do
       rC <- MV.unsafeRead reg iC
       putChar $ chr $ fromIntegral (rC .&. 0xff)
       System.IO.hFlush System.IO.stdout
-      spinCycle finger' reg program mem freekeys
+      spinCycle debug finger' reg program mem freekeys
 
     Input iC -> do
       -- The universal machine waits for input on the console.
@@ -205,7 +222,7 @@ spinCycle finger reg program mem freekeys = do
         else
           getChar >>= (return . fromIntegral . ord)
       MV.unsafeWrite reg iC rC'
-      spinCycle finger' reg program mem freekeys
+      spinCycle debug finger' reg program mem freekeys
 
     LoadProgram iB iC -> do
       -- The array identified by the B register is duplicated
@@ -221,26 +238,24 @@ spinCycle finger reg program mem freekeys = do
       rC <- MV.unsafeRead reg iC
       let finger'' = fromIntegral rC
       if rB == 0 then
-        spinCycle finger'' reg program mem freekeys
+        spinCycle debug finger'' reg program mem freekeys
       else do
         program' <- MV.clone $ mem IntMap.! (fromIntegral rB)
-        spinCycle finger'' reg program' mem freekeys
+        spinCycle debug finger'' reg program' mem freekeys
 
     Orthography iA val -> do
       -- The value indicated is loaded into the register A forthwith.
       MV.unsafeWrite reg iA val
-      spinCycle finger' reg program mem freekeys
+      spinCycle debug finger' reg program mem freekeys
 
-
-runUM :: (V.Vector Word32) -> IO ()
-runUM program = do
-  -- Set the initial state and start the spin cycle.
-  let finger = 0
-  registers <- MV.replicate 8 (0 :: Word32)
-  program' <- V.thaw program
-  let memory = IntMap.empty
-  let freekeys = [1..]  -- Available keys in the memory map.
-  spinCycle finger registers program' memory freekeys
+disas :: Int -> (V.Vector Word32) -> IO ()
+disas finger program = do
+  if finger < V.length program then do
+    let instr = program V.! finger
+    putStrLn $ show $ decodeInstr instr
+    disas (finger + 1) program
+  else
+    return ()
 
 pack32 :: [Word8] -> [Word32]
 pack32 (a:b:c:d:rest) =
@@ -258,14 +273,51 @@ readScroll filename = do
   else
     return $ V.fromList $ (pack32 . B.unpack) bytes
 
+
+data Opts = Opts
+  { optDisas :: Bool
+  , optDebug :: Bool
+  , optFinger :: Int
+  , optProgram :: String
+  }
+
+um :: Opts -> IO ()
+um o = do
+  let finger = optFinger o
+  program <- readScroll (optProgram o)
+  if optDisas o then
+    disas finger program
+  else do
+    let debug = optDebug o
+    reg <- MV.replicate 8 (0 :: Word32)
+    program' <- V.thaw program
+    let mem = IntMap.empty
+    let freekeys = [1..]  -- Available keys in the memory map.
+    spinCycle debug finger reg program' mem freekeys
+
 main :: IO ()
-main = do
-  args <- System.Environment.getArgs
-  case args of
-    [filename] -> do
-      program <- readScroll filename
-      runUM program
-    _ -> do
-      prog_name <- System.Environment.getProgName
-      putStrLn $ "usage: " <> prog_name <> " scroll.umz"
-      System.Exit.exitFailure
+main = um =<< OA.execParser (OA.info
+  (OA.helper <*> opts)
+  (OA.fullDesc <> OA.progDesc "ICFP2006 Universal Machine"))
+  where
+    opts :: OA.Parser Opts
+    opts = Opts
+      <$> OA.switch
+        ( OA.long "disassemble"
+        <> OA.short 'x'
+        <> OA.help "Disassemble instead of running" )
+      <*> OA.switch
+        ( OA.long "debug"
+        <> OA.short 'd'
+        <> OA.help "Log state to stderr" )
+      <*> OA.option OA.auto
+        ( OA.long "finger"
+        <> OA.short 'f'
+        <> OA.help "Initial value of the execution finger"
+        <> OA.showDefault
+        <> OA.value 0
+        <> OA.metavar "INT" )
+      <*> OA.strArgument
+        ( OA.metavar "PROGRAM"
+        <> OA.help "Filename of the UM program" )
+
